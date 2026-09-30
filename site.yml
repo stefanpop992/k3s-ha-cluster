@@ -1,0 +1,102 @@
+---
+# HA k3s-kluster: 3 control-plane (etcd, taintade) + 3 workers.
+# Kör: ansible-playbook site.yml
+
+- name: Förbered alla noder
+  hosts: k3s_cluster
+  become: true
+  tasks:
+    - name: Stäng av swap
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+    - name: Sätt hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
+- name: Starta första control-plane-noden
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Installera k3s server med --cluster-init
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_CHANNEL={{ k3s_channel }} \
+          K3S_TOKEN={{ k3s_token }} \
+          sh -s - server \
+            --cluster-init \
+            --node-taint node-role.kubernetes.io/control-plane:NoSchedule \
+            --tls-san {{ ansible_host }} \
+            --write-kubeconfig-mode 644
+      args:
+        creates: /usr/local/bin/k3s
+    - name: Vänta på att API-servern svarar
+      ansible.builtin.command: k3s kubectl get --raw=/readyz
+      register: ready
+      retries: 30
+      delay: 5
+      until: ready.rc == 0
+      changed_when: false
+
+- name: Anslut övriga control-plane-noder
+  hosts: control_plane[1:]
+  become: true
+  serial: 1
+  tasks:
+    - name: Installera k3s server och joina
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_CHANNEL={{ k3s_channel }} \
+          K3S_TOKEN={{ k3s_token }} \
+          sh -s - server \
+            --server https://{{ first_cp_ip }}:6443 \
+            --node-taint node-role.kubernetes.io/control-plane:NoSchedule \
+            --tls-san {{ ansible_host }} \
+            --write-kubeconfig-mode 644
+      args:
+        creates: /usr/local/bin/k3s
+
+- name: Anslut worker-noder
+  hosts: workers
+  become: true
+  tasks:
+    - name: Installera k3s agent
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_CHANNEL={{ k3s_channel }} \
+          K3S_URL=https://{{ first_cp_ip }}:6443 \
+          K3S_TOKEN={{ k3s_token }} \
+          sh -s - agent \
+            --node-label node-role.kubernetes.io/worker=true \
+            --node-label svccontroller.k3s.cattle.io/enablelb=true
+      args:
+        creates: /usr/local/bin/k3s-agent-uninstall.sh
+
+- name: Verifiera och hämta kubeconfig
+  hosts: control_plane[0]
+  become: true
+  tasks:
+    - name: Vänta tills alla 6 noder är Ready
+      ansible.builtin.shell: k3s kubectl get nodes --no-headers | grep -cw Ready
+      register: ready_nodes
+      retries: 30
+      delay: 10
+      until: ready_nodes.stdout | int == groups['k3s_cluster'] | length
+      changed_when: false
+    - name: Visa noder
+      ansible.builtin.command: k3s kubectl get nodes -o wide
+      register: nodes
+      changed_when: false
+    - name: Nodlista
+      ansible.builtin.debug:
+        var: nodes.stdout_lines
+    - name: Läs kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/rancher/k3s/k3s.yaml
+      register: kubeconfig
+    - name: Spara kubeconfig lokalt
+      become: false
+      delegate_to: localhost
+      ansible.builtin.copy:
+        content: "{{ kubeconfig.content | b64decode | replace('127.0.0.1', first_cp_ip) }}"
+        dest: "{{ playbook_dir }}/kubeconfig"
+        mode: "0600"

@@ -1,0 +1,5 @@
+# Hemligheter och genererade filer – ska INTE upp på GitHub
+group_vars/all.yml
+inventory.ini
+kubeconfig
+cloud-init.yaml
