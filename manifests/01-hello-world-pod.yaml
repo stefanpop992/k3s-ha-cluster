@@ -1,0 +1,10 @@
+# Enklaste testet: en POD som skriver "Hello from Docker!" och avslutas.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-world
+spec:
+  restartPolicy: Never
+  containers:
+    - name: hello
+      image: hello-world

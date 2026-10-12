@@ -1,0 +1,81 @@
+# Webbsida på klustret:
+#   ConfigMap (HTML) -> Deployment (3 pods) -> Service -> Ingress (Traefik)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webapp-html
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="sv"><head><meta charset="utf-8"><title>Hello k3s</title>
+    <style>body{font-family:sans-serif;max-width:40em;margin:4em auto;line-height:1.5}
+    code{background:#eee;padding:.1em .4em;border-radius:4px}</style></head>
+    <body>
+      <h1>Hej från Stefans k3s-kluster! 👋</h1>
+      <p>Den här sidan serverades av pod <code>__POD__</code>
+         på worker-noden <code>__NODE__</code> (pod-IP <code>__IP__</code>).</p>
+      <p>Ladda om sidan (Ctrl+Shift+R) – Traefik fördelar anropen mellan poddarna.</p>
+    </body></html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: webapp }
+  template:
+    metadata:
+      labels: { app: webapp }
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: webapp }
+      initContainers:
+        - name: render
+          image: busybox:1.36
+          command: ["sh", "-c",
+            "sed -e \"s/__POD__/$POD/\" -e \"s/__NODE__/$NODE/\" -e \"s/__IP__/$IP/\" /tmpl/index.html > /html/index.html"]
+          env:
+            - { name: POD,  valueFrom: { fieldRef: { fieldPath: metadata.name } } }
+            - { name: NODE, valueFrom: { fieldRef: { fieldPath: spec.nodeName } } }
+            - { name: IP,   valueFrom: { fieldRef: { fieldPath: status.podIP } } }
+          volumeMounts:
+            - { name: tmpl, mountPath: /tmpl }
+            - { name: html, mountPath: /html }
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports: [{ containerPort: 80 }]
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+          volumeMounts:
+            - { name: html, mountPath: /usr/share/nginx/html }
+      volumes:
+        - { name: tmpl, configMap: { name: webapp-html } }
+        - { name: html, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp
+spec:
+  selector: { app: webapp }
+  ports: [{ port: 80, targetPort: 80 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: webapp
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: webapp, port: { number: 80 } }

@@ -1,0 +1,5 @@
+---
+# Kopiera till group_vars/all.yml och fyll i egna värden (all.yml checkas inte in).
+k3s_channel: stable
+k3s_token: "BYT-MIG"          # generera med: openssl rand -hex 32
+first_cp_ip: "10.8.51.107"    # cp1:s IP från 'multipass list'
